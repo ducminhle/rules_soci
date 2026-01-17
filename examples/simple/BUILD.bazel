@@ -1,0 +1,50 @@
+load("@rules_go//go:def.bzl", "go_binary")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("@rules_soci//soci:defs.bzl", "soci_image", "soci_push")
+
+go_binary(
+    name = "hello_app",
+    srcs = ["hello.go"],
+)
+
+pkg_tar(
+    name = "hello_layer",
+    srcs = [":hello_app"],
+    package_dir = "/app",
+)
+
+# Build OCI image
+oci_image(
+    name = "hello_image",
+    base = "@ubuntu_base",
+    entrypoint = ["/app/hello_app"],
+    tars = [":hello_layer"],
+)
+
+oci_load(
+    name = "hello_load",
+    image = ":hello_image",
+    repo_tags = ["myapp:v1"],
+)
+
+filegroup(
+    name = "hello_load.tar",
+    srcs = [":hello_load"],
+    output_group = "tarball",
+)
+
+soci_image(
+    name = "hello_soci",
+    image = ":hello_load.tar",
+    repo_tags = [
+        "docker.io/minhducle/hello:latest",
+        "docker.io/minhducle/hello:abc",
+    ],
+)
+
+# Push SOCI image
+soci_push(
+    name = "hello_push",
+    soci_image = ":hello_soci",
+)

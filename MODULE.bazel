@@ -1,0 +1,13 @@
+"""rules_soci - Bazel rules for SOCI (Seekable OCI)"""
+
+module(
+    name = "rules_soci",
+    version = "0.1.0",
+)
+
+# Dependencies for rules_soci itself
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+bazel_dep(name = "stardoc", version = "0.8.1", dev_dependency = True, repo_name = "io_bazel_stardoc")
+bazel_dep(name = "rules_shell", version = "0.6.1", dev_dependency = True)
