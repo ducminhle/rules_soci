@@ -1,0 +1,82 @@
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("@rules_soci//soci:defs.bzl", "soci_image", "soci_push")
+
+# Create a simple shell script as our "app"
+genrule(
+    name = "app_binary",
+    outs = ["hello.sh"],
+    cmd = """
+cat > $@ <<'EOF'
+#!/bin/sh
+echo "Hello from SOCI!"
+echo "This container uses lazy-loading!"
+EOF
+chmod +x $@
+""",
+)
+
+# Package the app
+pkg_tar(
+    name = "app_layer",
+    srcs = [":app_binary"],
+    mode = "0755",
+    package_dir = "/app",
+)
+
+# Build OCI image
+oci_image(
+    name = "hello_app",
+    base = "@distroless_base",
+    entrypoint = ["/app/hello.sh"],
+    tars = [":app_layer"],
+)
+
+# Convert to SOCI format
+soci_image(
+    name = "hello_app_soci",
+    image = ":hello_app",
+    platform = "linux/amd64",
+)
+
+# Push targets (update registry as needed)
+oci_push(
+    name = "push",
+    image = ":hello_app",
+    repository = "localhost:5000/hello",
+    remote_tags = ["latest"],
+)
+
+soci_push(
+    name = "push_soci",
+    image = ":hello_app",
+    soci_artifacts = ":hello_app_soci",
+    image_ref = "localhost:5000/hello:latest",
+)
+
+# Multi-platform example
+oci_image(
+    name = "hello_app_amd64",
+    base = "@distroless_base",
+    entrypoint = ["/app/hello.sh"],
+    tars = [":app_layer"],
+)
+
+soci_image(
+    name = "hello_app_amd64_soci",
+    image = ":hello_app_amd64",
+    platform = "linux/amd64",
+)
+
+oci_image(
+    name = "hello_app_arm64",
+    base = "@distroless_base",
+    entrypoint = ["/app/hello.sh"],
+    tars = [":app_layer"],
+)
+
+soci_image(
+    name = "hello_app_arm64_soci",
+    image = ":hello_app_arm64",
+    platform = "linux/arm64",
+)
