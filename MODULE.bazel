@@ -1,21 +1,11 @@
-"""rules_soci - Bazel rules for SOCI (Seekable OCI) images"""
+"""rules_soci - Bazel rules for SOCI (Seekable OCI)"""
 
 module(
     name = "rules_soci",
     version = "0.1.0",
-    compatibility_level = 1,
 )
 
+# Dependencies for rules_soci itself
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "platforms", version = "1.0.0")
-bazel_dep(name = "rules_oci", version = "2.2.7")
-
-# SOCI toolchain setup
-soci = use_extension("//soci:extensions.bzl", "soci")
-soci.toolchain(
-    name = "soci",
-    version = "0.12.1",
-)
-use_repo(soci, "soci_toolchains")
-
-register_toolchains("@soci_toolchains//:all")
+bazel_dep(name = "stardoc", version = "0.8.0", dev_dependency = True, repo_name = "io_bazel_stardoc")

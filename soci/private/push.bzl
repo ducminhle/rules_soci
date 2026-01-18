@@ -1,39 +1,64 @@
-"""SOCI push rule for uploading indices to registries"""
+"""Push SOCI-enabled images to container registries.
+"""
 
-load(":toolchain.bzl", "SociToolchainInfo")
+load(":image.bzl", "SociImageInfo")
 
 def _soci_push_impl(ctx):
-    """Push SOCI artifacts to a registry"""
+    """Push SOCI-enabled image to registry using crane"""
 
-    toolchain = ctx.toolchains["@rules_soci//soci:toolchain_type"]
-    soci_info = toolchain.soci_info
-    soci_bin = soci_info.soci_bin
+    soci_marker = ctx.file.soci_image
+    crane_toolchain = ctx.toolchains["@rules_soci//soci:crane_toolchain_type"]
+    crane = crane_toolchain.crane_info.binary
 
-    image = ctx.attr.image
-    soci_artifacts = ctx.file.soci_artifacts
-
-    # Create push script
     push_script = ctx.actions.declare_file(ctx.label.name + "_push.sh")
 
-    script_content = """#!/usr/bin/env bash
+    # Get repo_tags from soci_image provider if not specified
+    if ctx.attr.repo_tags:
+        image_refs = ctx.attr.repo_tags
+    else:
+        # Auto-detect from soci_image
+        soci_image_info = ctx.attr.soci_image[SociImageInfo]
+        image_refs = soci_image_info.repo_tags
+        if not image_refs:
+            fail("No repo_tags found. Specify repo_tags in soci_push or soci_image")
+
+    # Build push commands for each image ref
+    push_commands = ""
+    for ref in image_refs:
+        push_commands += '''
+echo "Pushing: {ref}"
+
+# Export from containerd
+TEMP=$(mktemp -d)
+trap "rm -rf $TEMP" EXIT
+
+if ! ctr image export "$TEMP/image.tar" "{ref}" 2>/dev/null; then
+    echo "Error: Image not found in containerd. Run: bazel build {soci_target}"
+    exit 1
+fi
+
+# Push with crane
+if "$CRANE" push "$TEMP/image.tar" "{ref}"; then
+    echo "✓ Pushed successfully"
+else
+    echo "Error: Push failed. Make sure you're logged in: docker login"
+    exit 1
+fi
+
+'''.format(
+            ref = ref,
+            soci_target = "//" + ctx.label.package + ":" + ctx.label.name.replace("_push", "_soci"),
+        )
+
+    script_content = '''#!/usr/bin/env bash
 set -euo pipefail
 
-SOCI_BIN="{soci_bin}"
-SOCI_ARTIFACTS="{soci_artifacts}"
-IMAGE_REF="{image_ref}"
+CRANE="$PWD/{crane}"
 
-echo "Pushing SOCI artifacts for $IMAGE_REF..."
-
-# Push SOCI index
-"$SOCI_BIN" push \\
-    --ref "$IMAGE_REF" \\
-    "$SOCI_ARTIFACTS"
-
-echo "✓ Successfully pushed SOCI artifacts to $IMAGE_REF"
-""".format(
-        soci_bin = soci_bin.path,
-        soci_artifacts = soci_artifacts.path,
-        image_ref = ctx.attr.image_ref,
+{push_commands}
+'''.format(
+        crane = crane.short_path,
+        push_commands = push_commands,
     )
 
     ctx.actions.write(
@@ -42,58 +67,55 @@ echo "✓ Successfully pushed SOCI artifacts to $IMAGE_REF"
         is_executable = True,
     )
 
-    runfiles = ctx.runfiles(
-        files = [soci_bin, soci_artifacts],
-        transitive_files = image[DefaultInfo].files,
-    )
+    runfiles = ctx.runfiles(files = [soci_marker, crane])
 
-    return [
-        DefaultInfo(
-            executable = push_script,
-            runfiles = runfiles,
-        ),
-    ]
+    return [DefaultInfo(executable = push_script, runfiles = runfiles)]
 
 soci_push = rule(
     implementation = _soci_push_impl,
     executable = True,
     attrs = {
-        "image": attr.label(
-            mandatory = True,
-            doc = "OCI image target",
-        ),
-        "soci_artifacts": attr.label(
+        "soci_image": attr.label(
             mandatory = True,
             allow_single_file = True,
-            doc = "SOCI artifacts from soci_image",
+            providers = [SociImageInfo],
+            doc = "SOCI marker file from soci_image rule",
         ),
-        "image_ref": attr.string(
-            mandatory = True,
-            doc = "Full image reference (e.g. registry.io/myapp:tag)",
+        "repo_tags": attr.string_list(
+            default = [],
+            doc = "List of image references to push. If not specified, uses repo_tags from soci_image.",
         ),
     },
-    toolchains = ["@rules_soci//soci:toolchain_type"],
-    doc = """Push SOCI indices to a container registry.
+    toolchains = ["@rules_soci//soci:crane_toolchain_type"],
+    doc = """Push SOCI-enabled image to registry.
 
-This rule creates an executable that pushes SOCI artifacts alongside
-the OCI image to enable lazy-loading.
+Uses crane for authentication (reads ~/.docker/config.json automatically).
 
-Example:
-    load("@rules_soci//soci:defs.bzl", "soci_image", "soci_push")
-
+Example (auto-detect from soci_image):
     soci_image(
         name = "app_soci",
-        image = ":app",
+        image = ":app_tarball",
+        repo_tags = [
+            "docker.io/user/app:v1",
+            "docker.io/user/app:latest",
+        ],
     )
 
     soci_push(
-        name = "push_soci",
-        image = ":app",
-        soci_artifacts = ":app_soci",
-        image_ref = "myregistry.io/myapp:latest",
+        name = "push",
+        soci_image = ":app_soci",
+        # repo_tags automatically inherited from app_soci
+    )
+
+Example (override tags):
+    soci_push(
+        name = "push_prod",
+        soci_image = ":app_soci",
+        repo_tags = ["docker.io/user/app:prod"],  # Only push prod tag
     )
 
 Usage:
-    bazel run //:push_soci
+    docker login docker.io
+    bazel run //:push
 """,
 )

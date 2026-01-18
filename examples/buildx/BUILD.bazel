@@ -1,0 +1,52 @@
+load("@aspect_rules_buildx//buildx:defs.bzl", "buildx", "context")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
+load("@rules_soci//soci:defs.bzl", "soci_image", "soci_push")
+
+buildx(
+    name = "buildx_image",
+    build_context = [
+        # replaces FROM python:3.11.9-bullseye with @ubuntu from oci_pull
+        context.oci_layout(
+            "python:3.11.9-bullseye",
+            "@python_3_11_9-bullseye",
+        ),
+        context.sources(
+            "root",
+            glob(["src/*"]),
+            override_path = "src",
+        ),
+    ],
+    dockerfile = ":Dockerfile",
+)
+
+oci_image(
+    name = "buildx_oci_image",
+    base = ":buildx_image",
+)
+
+oci_load(
+    name = "buildx_oci_load",
+    image = ":buildx_oci_image",
+    repo_tags = ["buildx:latest"],
+)
+
+filegroup(
+    name = "buildx_oci_load.tar",
+    srcs = [":buildx_oci_load"],
+    output_group = "tarball",
+)
+
+soci_image(
+    name = "buildx_soci_image",
+    image = ":buildx_oci_load.tar",
+    repo_tags = [
+        "docker.io/minhducle/buildx_soci:latest",
+        "docker.io/minhducle/buildx_soci:1.0.0",
+    ],
+)
+
+soci_push(
+    name = "buildx_soci_push",
+    soci_image = ":buildx_soci_image",
+)

@@ -1,82 +1,50 @@
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+load("@rules_go//go:def.bzl", "go_binary")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("@rules_soci//soci:defs.bzl", "soci_image", "soci_push")
 
-# Create a simple shell script as our "app"
-genrule(
-    name = "app_binary",
-    outs = ["hello.sh"],
-    cmd = """
-cat > $@ <<'EOF'
-#!/bin/sh
-echo "Hello from SOCI!"
-echo "This container uses lazy-loading!"
-EOF
-chmod +x $@
-""",
+go_binary(
+    name = "hello_app",
+    srcs = ["hello.go"],
 )
 
-# Package the app
 pkg_tar(
-    name = "app_layer",
-    srcs = [":app_binary"],
-    mode = "0755",
+    name = "hello_layer",
+    srcs = [":hello_app"],
     package_dir = "/app",
 )
 
 # Build OCI image
 oci_image(
-    name = "hello_app",
-    base = "@distroless_base",
-    entrypoint = ["/app/hello.sh"],
-    tars = [":app_layer"],
+    name = "hello_image",
+    base = "@ubuntu_base",
+    entrypoint = ["/app/hello_app"],
+    tars = [":hello_layer"],
 )
 
-# Convert to SOCI format
+oci_load(
+    name = "hello_load",
+    image = ":hello_image",
+    repo_tags = ["myapp:v1"],
+)
+
+filegroup(
+    name = "hello_load.tar",
+    srcs = [":hello_load"],
+    output_group = "tarball",
+)
+
 soci_image(
-    name = "hello_app_soci",
-    image = ":hello_app",
-    platform = "linux/amd64",
+    name = "hello_soci",
+    image = ":hello_load.tar",
+    repo_tags = [
+        "docker.io/minhducle/hello:latest",
+        "docker.io/minhducle/hello:abc",
+    ],
 )
 
-# Push targets (update registry as needed)
-oci_push(
-    name = "push",
-    image = ":hello_app",
-    repository = "localhost:5000/hello",
-    remote_tags = ["latest"],
-)
-
+# Push SOCI image
 soci_push(
-    name = "push_soci",
-    image = ":hello_app",
-    soci_artifacts = ":hello_app_soci",
-    image_ref = "localhost:5000/hello:latest",
-)
-
-# Multi-platform example
-oci_image(
-    name = "hello_app_amd64",
-    base = "@distroless_base",
-    entrypoint = ["/app/hello.sh"],
-    tars = [":app_layer"],
-)
-
-soci_image(
-    name = "hello_app_amd64_soci",
-    image = ":hello_app_amd64",
-    platform = "linux/amd64",
-)
-
-oci_image(
-    name = "hello_app_arm64",
-    base = "@distroless_base",
-    entrypoint = ["/app/hello.sh"],
-    tars = [":app_layer"],
-)
-
-soci_image(
-    name = "hello_app_arm64_soci",
-    image = ":hello_app_arm64",
-    platform = "linux/arm64",
+    name = "hello_push",
+    soci_image = ":hello_soci",
 )

@@ -6,12 +6,11 @@ Load rules from here in your BUILD files:
     load("@rules_soci//soci:defs.bzl", "soci_image", "soci_push")
 """
 
-load("//soci/private:image.bzl", _soci_image = "soci_image", _soci_load = "soci_load")
+load("//soci/private:image.bzl", _soci_image = "soci_image")
 load("//soci/private:push.bzl", _soci_push = "soci_push")
 
 # Re-export public rules
 soci_image = _soci_image
-soci_load = _soci_load
 soci_push = _soci_push
 
 # Version info

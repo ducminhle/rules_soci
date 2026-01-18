@@ -1,8 +1,14 @@
 # rules_soci
 
-Bazel rules for creating [SOCI (Seekable OCI)](https://github.com/awslabs/soci-snapshotter) images with lazy-loading indices.
+Bazel rules for converting OCI container images to [SOCI (Seekable OCI)](https://github.com/awslabs/soci-snapshotter) images ([SOCI Index Manifest v2](https://github.com/awslabs/soci-snapshotter/blob/main/docs/soci-index-manifest-v2.md)) with lazy-loading indices.
 
 ## Quick Start
+### Requirements
+
+- Bazel 8.5.0+
+- Bzlmod enabled
+- [containerd](https://github.com/containerd/containerd) installed and running (for image conversion)
+- Linux host (SOCI is Linux-only)
 
 ### Installation
 
@@ -11,323 +17,245 @@ Add to your `MODULE.bazel`:
 ```starlark
 bazel_dep(name = "rules_soci", version = "0.1.0")
 
-# Optional: specify SOCI version
+# Configure SOCI extension
 soci = use_extension("@rules_soci//soci:extensions.bzl", "soci")
 soci.toolchain(
-    name = "soci",
-    version = "0.12.1",
+    soci_version = "0.12.1",    # Optional, defaults to 0.12.1
+    crane_version = "0.20.7",   # Optional, defaults to 0.20.7
 )
 use_repo(soci, "soci_toolchains")
+
+# Register toolchains
+register_toolchains("@soci_toolchains//:all")
 ```
 
-### Usage
+## Usage
+
+### Basic Example
 
 ```starlark
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_soci//soci:defs.bzl", "soci_image", "soci_push")
 
 # Build OCI image
 oci_image(
     name = "app",
     base = "@distroless_base",
-    entrypoint = ["/app/main"],
-    tars = [":app_layer"],
+    entrypoint = ["/app"],
+    cmd = ["--port=8080"],
 )
 
-# Convert to SOCI
+oci_load(
+    name = "app_load",
+    image = ":app",
+    repo_tags = ["myapp:latest"],
+)
+
+filegroup(
+    name = "app_tarball",
+    srcs = [":app_load"],
+    output_group = "tarball",
+)
+
+# Convert to SOCI format
 soci_image(
     name = "app_soci",
-    image = ":app",
-    platform = "linux/amd64",
+    image = ":app_tarball",
+    repo_tags = [
+        "docker.io/myuser/app:latest",
+        "docker.io/myuser/app:v1.0.0",
+    ],
 )
 
-# Push image
-oci_push(
-    name = "push",
-    image = ":app",
-    repository = "myregistry.io/myapp",
-)
-
-# Push SOCI artifacts
+# Push to registry
 soci_push(
-    name = "push_soci",
-    image = ":app",
-    soci_artifacts = ":app_soci",
-    image_ref = "myregistry.io/myapp:latest",
+    name = "soci_push",
+    soci_image = ":app_soci",
+    # repo_tags automatically inherited from app_soci
 )
 ```
 
-Build and push:
+### BuildX Example
+- [BuildX](./examples/buildx/)
+
+### Build and Push
 
 ```bash
-bazel run //:push
-bazel run //:push_soci
+# Convert image to SOCI format
+bazel build //:app_soci
+
+# Push to registry (requires docker login)
+docker login docker.io
+bazel run //:soci_push
 ```
 
 ## Rules
 
-### soci_image
+### `soci_image`
 
-Convert an OCI image to SOCI format.
+Converts an OCI image tarball to SOCI format.
 
 **Attributes:**
 
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `image` | `label` | required | OCI image target |
-| `min_layer_size` | `int` | 10485760 (10MB) | Minimum layer size to index |
-| `span_size` | `int` | 4194304 (4MB) | Span size for ztoc |
-| `platform` | `string` | `""` | Target platform |
+- `image` (required): OCI image tarball from `oci_load`
+- `repo_tags` (optional): List of repository tags (e.g., `["docker.io/user/app:v1.0.0", "docker.io/user/app:latest"]`)
+- `min_layer_size` (optional, default: 10MB): Minimum layer size in bytes to create SOCI index for
+- `span_size` (optional, default: 4MB): Span size in bytes for ztoc generation
 
 **Example:**
 
 ```starlark
 soci_image(
-    name = "myapp_soci",
-    image = ":myapp",
-    min_layer_size = 20971520,  # 20MB
-    span_size = 8388608,        # 8MB
-    platform = "linux/amd64",
+    name = "app_soci",
+    image = ":app_tarball",
+    repo_tags = ["docker.io/myuser/app:latest"],
+    min_layer_size = 10485760,  # 10MB
+    span_size = 4194304,        # 4MB
 )
 ```
 
-### soci_push
+### `soci_push`
 
-Push SOCI artifacts to a registry.
+Pushes SOCI-enabled images to a container registry.
 
 **Attributes:**
 
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `image` | `label` | required | OCI image target |
-| `soci_artifacts` | `label` | required | SOCI artifacts from soci_image |
-| `image_ref` | `string` | required | Full image reference |
+- `soci_image` (required): SOCI marker file from `soci_image` rule
+- `repo_tags` (optional): List of image references to push. If not specified, inherits from `soci_image`
 
 **Example:**
 
 ```starlark
 soci_push(
-    name = "push_myapp_soci",
-    image = ":myapp",
-    soci_artifacts = ":myapp_soci",
-    image_ref = "ghcr.io/myorg/myapp:v1.0.0",
+    name = "push",
+    soci_image = ":app_soci",
+)
+
+# Override with specific tags
+soci_push(
+    name = "push_prod",
+    soci_image = ":app_soci",
+    repo_tags = ["docker.io/myuser/app:prod"],
 )
 ```
 
-### soci_load
+## Advanced Configuration
 
-Load a tarball and convert to SOCI.
+### Multiple Tags
 
-**Attributes:**
+Create and push multiple tags in one go:
 
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `tarball` | `label` | required | OCI tarball (.tar or .tar.gz) |
-| `min_layer_size` | `int` | 10485760 | Minimum layer size |
-| `span_size` | `int` | 4194304 | Span size |
-| `platform` | `string` | `""` | Target platform |
-
-**Example:**
-
-```starlark
-soci_load(
-    name = "imported_soci",
-    tarball = "external_image.tar",
-    platform = "linux/arm64",
-)
-```
-
-## Configuration
-
-### Toolchain Version
-
-Specify SOCI version in MODULE.bazel:
-
-```starlark
-soci = use_extension("@rules_soci//soci:extensions.bzl", "soci")
-soci.toolchain(
-    name = "soci",
-    version = "0.12.1",  # or other supported version
-)
-```
-
-### Supported Versions
-
-- `0.12.1` (default, recommended)
-
-### Platform Support
-
-| Platform | Status |
-|----------|--------|
-| Linux AMD64 | ✅ Supported |
-| Linux ARM64 | ✅ Supported |
-| macOS Intel | ✅ Supported |
-| macOS Apple Silicon | ✅ Supported |
-
-## Examples
-
-### Multi-platform Images
-
-```starlark
-# AMD64
-oci_image(
-    name = "app_amd64",
-    base = "@distroless_base",
-    entrypoint = ["/app/main"],
-    tars = [":app_layer"],
-)
-
+```python
 soci_image(
-    name = "app_amd64_soci",
-    image = ":app_amd64",
-    platform = "linux/amd64",
+    name = "app_soci",
+    image = ":app_tarball",
+    repo_tags = [
+        "docker.io/myuser/app:latest",
+        "docker.io/myuser/app:v1.0.0",
+        "docker.io/myuser/app:stable",
+    ],
 )
 
-# ARM64
-oci_image(
-    name = "app_arm64",
-    base = "@distroless_base",
-    entrypoint = ["/app/main"],
-    tars = [":app_layer"],
-)
-
-soci_image(
-    name = "app_arm64_soci",
-    image = ":app_arm64",
-    platform = "linux/arm64",
+soci_push(
+    name = "push_all",
+    soci_image = ":app_soci",
+    # Pushes all three tags
 )
 ```
 
-### With Custom Parameters
+### Performance Tuning
 
-```starlark
+For large images (1GB+), adjust layer size thresholds:
+
+```python
 soci_image(
     name = "large_app_soci",
-    image = ":large_app",
-    min_layer_size = 52428800,  # 50MB - for very large layers
-    span_size = 16777216,       # 16MB - for better lazy-loading
-    platform = "linux/amd64",
+    image = ":large_app_tarball",
+    min_layer_size = 52428800,  # 50MB - skip smaller layers
+    span_size = 8388608,         # 8MB - larger spans for big layers
 )
 ```
 
-## Performance
+For more granular lazy loading:
 
-SOCI can significantly reduce container startup time:
+```python
+soci_image(
+    name = "fine_grained_soci",
+    image = ":app_tarball",
+    min_layer_size = 5242880,   # 5MB - index more layers
+    span_size = 1048576,        # 1MB - smaller spans
+)
+```
 
-- **Small images** (<100MB): Minimal benefit
-- **Medium images** (100MB-1GB): 30-50% faster startup
-- **Large images** (>1GB): 50-80% faster startup
+## How it Works
 
-### Tuning
+1. **Image Conversion**: `soci_image` loads your OCI tarball into containerd and runs `soci convert` to create SOCI indices (ztoc files) for layers larger than `min_layer_size`
 
-- **min_layer_size**: Only index layers larger than this
-  - Smaller = more indices = more storage
-  - Larger = fewer indices = less benefit
-  - Default 10MB works for most cases
+2. **Multi-tagging**: Additional tags specified in `repo_tags` are created in containerd
 
-- **span_size**: Granularity of lazy-loading chunks
-  - Smaller = more granular = better lazy-loading = larger metadata
-  - Larger = less granular = faster builds = smaller metadata
-  - Default 4MB works for most cases
+3. **Push**: `soci_push` exports the SOCI-enabled image from containerd and uses `crane` to push it to the registry with authentication from `~/.docker/config.json`
 
 ## Troubleshooting
 
-### SHA256 Mismatch
+### containerd not found
 
-If you get SHA256 errors, the version registry may need updating.
+```
+Error: containerd not found
+```
 
-**Solution:** File an issue or update `soci/versions.bzl` manually:
+Install containerd:
+- Ubuntu/Debian: `sudo apt install containerd`
+- macOS: `brew install containerd` (note: SOCI only works on Linux)
+- Or download from: https://github.com/containerd/containerd/releases
+
+### Authentication failed
+
+```
+Error: unexpected status code 401 Unauthorized
+```
+
+Login to your registry first:
+```bash
+docker login docker.io
+# or
+docker login ghcr.io
+```
+
+### No layers converted
+
+```
+Warning: No layers met size threshold
+```
+
+All layers in your image are smaller than `min_layer_size`. Either:
+- Lower `min_layer_size` value
+- This is expected for small images - SOCI benefits larger images more
+
+## Documentation
+
+Generate API documentation:
 
 ```bash
-curl -L <SOCI_URL> | sha256sum
-```
+# Update all docs
+bazel run //docs:update
 
-### Platform Not Detected
-
-**Verify platform:**
-
-```bash
-bazel info execution_platform
-```
-
-**Force specific platform:**
-
-```bash
-bazel build --platforms=@platforms//os:linux //:app_soci
-```
-
-### SOCI Binary Not Found
-
-**Test toolchain:**
-
-```bash
-bazel query @soci_toolchains//...
-```
-
-## Development
-
-### Repository Structure
-
-```
-rules_soci/
-├── MODULE.bazel
-├── soci/
-│   ├── BUILD.bazel
-│   ├── defs.bzl           # Public API
-│   ├── extensions.bzl     # Bzlmod extension
-│   ├── versions.bzl       # Version registry
-│   └── private/
-│       ├── BUILD.bazel
-│       ├── toolchain.bzl  # Toolchain definition
-│       ├── image.bzl      # soci_image rule
-│       └── push.bzl       # soci_push rule
-├── docs/
-│   └── rules.md
-└── examples/
-    └── simple/
-        ├── MODULE.bazel
-        └── BUILD.bazel
-```
-
-### Adding New SOCI Versions
-
-1. Update `soci/versions.bzl`:
-
-```starlark
-SOCI_VERSIONS = {
-    "0.13.0": {
-        "linux_amd64": {
-            "url": "https://github.com/.../soci-snapshotter-0.13.0-linux-amd64.tar.gz",
-            "sha256": "...",
-            "strip_prefix": "soci-snapshotter-0.13.0-linux-amd64",
-        },
-        # ... other platforms
-    },
-}
-```
-
-2. Update DEFAULT_VERSION if needed
-
-3. Test:
-
-```bash
-bazel test //...
+# Test docs are up-to-date
+bazel test //docs:all
 ```
 
 ## Contributing
 
 Contributions welcome! Please:
 
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Submit a pull request
+1. Run tests: `bazel test //...`
+2. Update docs: `bazel run //docs:update`
 
 ## License
 
-Apache 2.0
+[Apache 2.0](./LICENSE)
 
 ## Credits
 
 - [SOCI Snapshotter](https://github.com/awslabs/soci-snapshotter) by AWS
-- Inspired by [rules_oci](https://github.com/bazel-contrib/rules_oci)
+- [crane](https://github.com/google/go-containerregistry) by Google
+- [rules_oci](https://github.com/bazel-contrib/rules_oci) for OCI image building

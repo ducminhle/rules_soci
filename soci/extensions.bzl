@@ -1,95 +1,107 @@
-"""Bzlmod extension for SOCI toolchain registration"""
+"""Bzlmod extension for SOCI toolchains"""
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-load(":versions.bzl", "SOCI_VERSIONS", "DEFAULT_VERSION")
+load(":versions.bzl",
+     "SOCI_VERSIONS", "CRANE_VERSIONS",
+     "DEFAULT_SOCI_VERSION", "DEFAULT_CRANE_VERSION")
 
-def _soci_toolchain_impl(ctx):
-    """Extension implementation for SOCI toolchain"""
-
-    toolchains = {}
-
-    for mod in ctx.modules:
-        for toolchain in mod.tags.toolchain:
-            version = toolchain.version or DEFAULT_VERSION
-            name = toolchain.name
-
-            if version not in SOCI_VERSIONS:
-                fail("SOCI version {} not supported. Available versions: {}".format(
-                    version,
-                    ", ".join(SOCI_VERSIONS.keys())
-                ))
-
-            toolchains[name] = {
-                "version": version,
-                "soci_info": SOCI_VERSIONS[version],
-            }
-
-    # Create toolchain repositories
-    for name, info in toolchains.items():
-        _create_toolchain_repos(name, info["version"], info["soci_info"])
-
-    return ctx.extension_metadata(
-        reproducible = True,
-        generated_repositories = ["soci_toolchains"],
-        root_module_direct_deps = [],
-        root_module_direct_dev_deps = [],
-    )
-
-def _create_toolchain_repos(name, version, soci_info):
-    """Create toolchain repositories for all platforms"""
+def _toolchains_repo_impl(rctx):
+    """Create toolchains repository"""
+    soci_version = rctx.attr.soci_version
+    soci_info = SOCI_VERSIONS[soci_version]
 
     platforms = [
-        ("linux", "amd64"),
-        ("linux", "arm64"),
+        ("linux", "amd64", "x86_64"),
+        ("linux", "arm64", "aarch64"),
     ]
 
-    for os, arch in platforms:
-        platform_name = "{}_{}".format(os, arch)
-        repo_name = "soci_{}_{}".format(name, platform_name)
+    build_content = """
+load("@rules_soci//soci/private:toolchain.bzl", "soci_toolchain", "crane_toolchain")
 
-        release_info = soci_info.get(platform_name)
-        if not release_info:
-            continue
-
-        http_archive(
-            name = repo_name,
-            urls = [release_info["url"]],
-            sha256 = release_info["sha256"],
-            strip_prefix = release_info.get("strip_prefix", ""),
-            build_file_content = _BUILD_FILE_CONTENT,
-        )
-
-_BUILD_FILE_CONTENT = """
-load("@rules_soci//soci/private:toolchain.bzl", "soci_toolchain")
-
-filegroup(
-    name = "soci_binary",
-    srcs = ["soci"],
-    visibility = ["//visibility:public"],
-)
-
-soci_toolchain(
-    name = "soci_toolchain",
-    soci = ":soci_binary",
-)
+package(default_visibility = ["//visibility:public"])
 """
 
-_toolchain = tag_class(
-    attrs = {
-        "name": attr.string(
-            doc = "Name for this toolchain",
-            default = "soci",
-        ),
-        "version": attr.string(
-            doc = "SOCI version to use",
-            default = DEFAULT_VERSION,
-        ),
-    },
+    for os, arch, cpu in platforms:
+        platform_name = "{}_{}".format(os, arch)
+
+        if soci_info.get(platform_name):
+            build_content += """
+soci_toolchain(
+    name = "soci_toolchain_{platform}",
+    soci = "@soci_{platform}//:soci_binary",
 )
 
+toolchain(
+    name = "soci_{platform}",
+    exec_compatible_with = ["@platforms//os:{os}", "@platforms//cpu:{cpu}"],
+    toolchain = ":soci_toolchain_{platform}",
+    toolchain_type = "@rules_soci//soci:toolchain_type",
+)
+
+crane_toolchain(
+    name = "crane_toolchain_{platform}",
+    crane = "@crane_{platform}//:crane",
+)
+
+toolchain(
+    name = "crane_{platform}",
+    exec_compatible_with = ["@platforms//os:{os}", "@platforms//cpu:{cpu}"],
+    toolchain = ":crane_toolchain_{platform}",
+    toolchain_type = "@rules_soci//soci:crane_toolchain_type",
+)
+""".format(platform=platform_name, os=os, cpu=cpu)
+
+    rctx.file("BUILD.bazel", build_content)
+    rctx.file("WORKSPACE", "")
+
+_toolchains_repo = repository_rule(
+    implementation = _toolchains_repo_impl,
+    attrs = {"soci_version": attr.string(mandatory = True)},
+)
+
+def _soci_impl(ctx):
+    """Extension implementation"""
+    soci_version = DEFAULT_SOCI_VERSION
+    crane_version = DEFAULT_CRANE_VERSION
+
+    for mod in ctx.modules:
+        for tag in mod.tags.toolchain:
+            if tag.soci_version:
+                soci_version = tag.soci_version
+            if tag.crane_version:
+                crane_version = tag.crane_version
+
+    # Download binaries
+    for platform in ["linux_amd64", "linux_arm64"]:
+        # SOCI
+        if platform in SOCI_VERSIONS[soci_version]:
+            info = SOCI_VERSIONS[soci_version][platform]
+            http_archive(
+                name = "soci_{}".format(platform),
+                urls = [info["url"]],
+                sha256 = info["sha256"],
+                strip_prefix = info.get("strip_prefix", ""),
+                build_file_content = 'filegroup(name = "soci_binary", srcs = ["soci"], visibility = ["//visibility:public"])',
+            )
+
+        # Crane
+        if platform in CRANE_VERSIONS[crane_version]:
+            info = CRANE_VERSIONS[crane_version][platform]
+            http_archive(
+                name = "crane_{}".format(platform),
+                urls = [info["url"]],
+                sha256 = info["sha256"],
+                build_file_content = 'exports_files(["crane"], visibility = ["//visibility:public"])',
+            )
+
+    _toolchains_repo(name = "soci_toolchains", soci_version = soci_version)
+
+_toolchain_tag = tag_class(attrs = {
+    "soci_version": attr.string(default = DEFAULT_SOCI_VERSION),
+    "crane_version": attr.string(default = DEFAULT_CRANE_VERSION),
+})
+
 soci = module_extension(
-    implementation = _soci_toolchain_impl,
-    tag_classes = {
-        "toolchain": _toolchain,
-    },
+    implementation = _soci_impl,
+    tag_classes = {"toolchain": _toolchain_tag},
 )

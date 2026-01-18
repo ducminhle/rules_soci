@@ -1,4 +1,12 @@
-"""SOCI toolchain definition and provider"""
+"""SOCI, and Crane toolchain definitions.
+
+This file only contains provider definitions and toolchain rules.
+Version management is in versions.bzl, repository setup is in repositories.bzl.
+"""
+
+# ============================================================================
+# Providers
+# ============================================================================
 
 SociToolchainInfo = provider(
     doc = "Information about the SOCI toolchain",
@@ -7,6 +15,17 @@ SociToolchainInfo = provider(
         "target_tool": "Tool metadata",
     },
 )
+
+CraneInfo = provider(
+    doc = "Information about crane binary for pushing images",
+    fields = {
+        "binary": "The crane executable",
+    },
+)
+
+# ============================================================================
+# SOCI Toolchain
+# ============================================================================
 
 def _soci_toolchain_impl(ctx):
     """Implementation of soci_toolchain rule"""
@@ -28,36 +47,36 @@ soci_toolchain = rule(
             mandatory = True,
         ),
     },
-    doc = "Defines a SOCI toolchain",
+    doc = "Defines a SOCI toolchain for converting images to SOCI format",
 )
 
-def _toolchain_config_impl(ctx):
-    """Create toolchain configurations for all platforms"""
-    toolchains = []
+# ============================================================================
+# Crane Toolchain
+# ============================================================================
 
-    platform_configs = [
-        ("linux", "x86_64", ctx.attr.linux_amd64),
-        ("linux", "aarch64", ctx.attr.linux_arm64),
-    ]
+def _crane_toolchain_impl(ctx):
+    """Crane toolchain implementation"""
+    # Get the crane executable from files
+    crane_files = ctx.files.crane
+    if not crane_files:
+        fail("crane attribute must provide files")
 
-    for os, cpu, toolchain in platform_configs:
-        if toolchain:
-            toolchains.append({
-                "os": os,
-                "cpu": cpu,
-                "toolchain": toolchain,
-            })
-
-    return [
-        platform_common.ToolchainInfo(
-            toolchains = toolchains,
+    toolchain_info = platform_common.ToolchainInfo(
+        crane_info = CraneInfo(
+            binary = crane_files[0],  # First file is the crane binary
         ),
-    ]
+    )
+    return [toolchain_info]
 
-toolchain_config = rule(
-    implementation = _toolchain_config_impl,
+crane_toolchain = rule(
+    implementation = _crane_toolchain_impl,
     attrs = {
-        "linux_amd64": attr.label(),
-        "linux_arm64": attr.label(),
+        "crane": attr.label(
+            doc = "The crane binary",
+            allow_files = True,  # Changed from executable = True
+            cfg = "exec",
+            mandatory = True,
+        ),
     },
+    doc = "Defines a crane toolchain for pushing images with automatic auth",
 )

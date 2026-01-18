@@ -1,36 +1,21 @@
-"""Example usage of rules_soci"""
+module(name = "soci_example", version = "0.0.0")
 
-module(
-    name = "soci_example",
-    version = "0.0.0",
-)
-
-# Use rules_soci from local repository (for development)
-# In production, use: bazel_dep(name = "rules_soci", version = "0.1.0")
 bazel_dep(name = "rules_soci", version = "0.1.0")
-local_path_override(
-    module_name = "rules_soci",
-    path = "../..",
-)
+local_path_override(module_name = "rules_soci", path = "../..")
 
-# Dependencies
-bazel_dep(name = "rules_oci", version = "2.0.0")
-bazel_dep(name = "rules_pkg", version = "0.10.1")
+bazel_dep(name = "rules_oci", version = "2.2.7")
+bazel_dep(name = "rules_pkg", version = "1.0.1")
+bazel_dep(name = "rules_go", version = "0.44.0")  # thêm rules_go để build Go app
 
-# Setup SOCI toolchain
 soci = use_extension("@rules_soci//soci:extensions.bzl", "soci")
-soci.toolchain(
-    name = "soci",
-    version = "0.12.1",
-)
+soci.toolchain(soci_version = "0.12.1")
 use_repo(soci, "soci_toolchains")
+register_toolchains("@soci_toolchains//:all")
 
-# Pull base image
 oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
 oci.pull(
-    name = "distroless_base",
-    digest = "sha256:ccaef5ee2f1850270d453fdf700a5392534f8d1a8ca2acda391fbb6a06b81c86",
-    image = "gcr.io/distroless/base",
+    name = "ubuntu_base",
+    image = "ubuntu:24.04",
     platforms = ["linux/amd64", "linux/arm64"],
 )
-use_repo(oci, "distroless_base")
+use_repo(oci, "ubuntu_base")
