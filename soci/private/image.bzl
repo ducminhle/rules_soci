@@ -50,6 +50,10 @@ def _soci_image_impl(ctx):
         convert_args.append(str(ctx.attr.min_layer_size))
 
     # Determine image references
+    repo_tags_list = []
+    repo_tags_from_file = False
+    tags_file = None
+
     if ctx.attr.repo_tags and len(ctx.attr.repo_tags) > 0:
         # First tag is the primary destination
         repo_tags_list = ctx.attr.repo_tags
@@ -57,6 +61,13 @@ def _soci_image_impl(ctx):
         image_ref = dest_ref + "-based"
         # Additional tags to create
         additional_tags = repo_tags_list[1:]
+    elif hasattr(ctx.attr, "repo_tags_file") and ctx.attr.repo_tags_file:
+        # Tags will be read from the provided file at execution time
+        repo_tags_from_file = True
+        tags_file = ctx.file.repo_tags_file
+        dest_ref = ""  # will be set in the runtime script from the file
+        image_ref = ""
+        additional_tags = None
     elif ctx.attr.image_ref:
         repo_tags_list = [ctx.attr.image_ref]
         image_ref = ctx.attr.image_ref
@@ -73,11 +84,25 @@ def _soci_image_impl(ctx):
     script = ctx.actions.declare_file(ctx.label.name + "_convert.sh")
 
     # Build additional tag commands
+    # Build additional tag commands. If tags come from a file, defer to script.
     tag_commands = ""
-    if additional_tags:
-        for tag in additional_tags:
-            tag_commands += 'ctr image tag "$DEST_REF" "{}" >/dev/null 2>&1\n'.format(tag)
-        tag_commands += 'echo "Tagged: {}"\n'.format(", ".join(additional_tags))
+    if repo_tags_from_file:
+        tag_commands = (
+            'TAGS_FILE="{tags_file}"\n' +
+            'DEST_REF=$(head -n1 "$TAGS_FILE" | tr -d "\\n")\n' +
+            'IMAGE_REF="${{DEST_REF}}-based"\n' +
+            'echo "Tags file: $TAGS_FILE -> primary: $DEST_REF"\n' +
+            'tail -n +2 "$TAGS_FILE" | while read -r tag; do\n' +
+            '  [ -z "$tag" ] && continue\n' +
+            '  ctr image tag "$DEST_REF" "$tag" >/dev/null 2>&1 || true\n' +
+            'done\n' +
+            'echo "Tagged from file."\n'
+        ).format(tags_file = tags_file.path)
+    else:
+        if additional_tags:
+            for tag in additional_tags:
+                tag_commands += 'ctr image tag "$DEST_REF" "{}" >/dev/null 2>&1\n'.format(tag)
+            tag_commands += 'echo "Tagged: {}"\n'.format(", ".join(additional_tags))
 
     ctx.actions.write(
         output = script,
@@ -161,9 +186,13 @@ fi
     )
 
     # Run conversion
+    run_inputs = [image_tar, soci_bin]
+    if repo_tags_from_file:
+        run_inputs.append(tags_file)
+
     ctx.actions.run(
         executable = script,
-        inputs = [image_tar, soci_bin],
+        inputs = run_inputs,
         outputs = [marker],
         mnemonic = "SociConvert",
         progress_message = "Converting %{label} to SOCI",
@@ -183,7 +212,7 @@ fi
         ),
     ]
 
-soci_image = rule(
+_soci_image_rule = rule(
     implementation = _soci_image_impl,
     attrs = {
         "image": attr.label(
@@ -201,6 +230,15 @@ soci_image = rule(
 The first tag is used as the final destination reference.
 The conversion process uses a temporary tag (first_tag + "-based") during conversion.
 """,
+        ),
+        "repo_tags_file": attr.label(
+            default = None,
+            allow_single_file = True,
+            doc = """
+            A text file (label) containing repository tags, one per line.
+            The first line is used as the primary destination tag; subsequent
+            lines will be created as additional tags. This allows stamping.
+            """,
         ),
         "min_layer_size": attr.int(
             default = 10485760,  # 10MB
@@ -268,3 +306,90 @@ Usage:
     bazel run //:app_soci_push  # Push to registry
 """,
 )
+
+
+def soci_image(name, image, image_ref = "", repo_tags = None, min_layer_size = 10485760, span_size = 4194304):
+    """Convert an OCI image to SOCI format for lazy loading.
+
+    Takes an OCI image tarball and converts it to SOCI format by creating seekable indices
+    (ztoc) for large layers. The resulting image can be pushed to a registry and used with
+    soci-snapshotter for lazy loading.
+
+    The `repo_tags` parameter is flexible and accepts either a list of strings or a label
+    to a tags file (for stamped builds).
+
+    Example:
+        load("@rules_oci//oci:defs.bzl", "oci_image", "oci_tarball")
+        load("@rules_soci//soci:defs.bzl", "soci_image", "soci_push")
+
+        oci_image(
+            name = "app",
+            base = "@distroless_base",
+            entrypoint = ["/app"],
+        )
+
+        oci_load(
+            name = "app_load",
+            image = ":app",
+            repo_tags = ["app:v1"],
+        )
+
+        filegroup(
+            name = "app_tarball",
+            srcs = [":app_load"],
+            output_group = "tarball",
+        )
+
+        soci_image(
+            name = "app_soci",
+            image = ":app_tarball",
+            repo_tags = ["docker.io/myuser/app:v1", "docker.io/myuser/app:latest"],
+        )
+
+        soci_push(
+            name = "app_soci_push",
+            soci_image = ":app_soci",
+        )
+
+    Usage:
+        bazel build //:app_soci     # Convert to SOCI
+        bazel run //:app_soci_push  # Push to registry
+
+    For stamped tags (via file):
+        soci_image(
+            name = "app_soci",
+            image = ":app_tarball",
+            repo_tags = ":stamped_tags",
+        )
+
+    Args:
+        name: A unique name for this target.
+        image: OCI image tarball from oci_tarball or oci_load.
+        image_ref: Fallback image reference for containerd.
+        repo_tags: Repository tags (list or label to tags file).
+        min_layer_size: Minimum layer size in bytes. Default: 10485760 (10MB).
+        span_size: Span size in bytes for ztoc. Default: 4194304 (4MB).
+    """
+    if repo_tags == None:
+        repo_tags = []
+
+    # Detect if repo_tags is a label (stamped file) or a list
+    if type(repo_tags) == "list":
+        return _soci_image_rule(
+            name = name,
+            image = image,
+            image_ref = image_ref,
+            repo_tags = repo_tags,
+            min_layer_size = min_layer_size,
+            span_size = span_size,
+        )
+    else:
+        # Treat as a label to a tags file
+        return _soci_image_rule(
+            name = name,
+            image = image,
+            image_ref = image_ref,
+            repo_tags_file = repo_tags,
+            min_layer_size = min_layer_size,
+            span_size = span_size,
+        )
