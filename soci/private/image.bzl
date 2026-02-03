@@ -126,7 +126,10 @@ fi
 
 # Import image
 ctr image import "$IMAGE_TAR" >/dev/null 2>&1 || {{
-    echo "Error: Failed to import image"
+    echo "Error: Failed to import image from $IMAGE_TAR"
+    echo "Debugging info:"
+    ctr image ls || true
+    echo "Image tar exists: $([ -f "$IMAGE_TAR" ] && echo yes || echo no)"
     exit 1
 }}
 
