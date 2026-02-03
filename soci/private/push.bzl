@@ -4,11 +4,9 @@
 load(":image.bzl", "SociImageInfo")
 
 def _soci_push_impl(ctx):
-    """Push SOCI-enabled image to registry using crane"""
+    """Push SOCI-enabled image to registry using nerdctl"""
 
     soci_marker = ctx.file.soci_image
-    crane_toolchain = ctx.toolchains["@rules_soci//soci:crane_toolchain_type"]
-    crane = crane_toolchain.crane_info.binary
 
     push_script = ctx.actions.declare_file(ctx.label.name + "_push.sh")
 
@@ -36,94 +34,143 @@ def _soci_push_impl(ctx):
 
     # Build script based on whether we use file or list
     if use_tags_file:
-        # Read tags from file at runtime - export once, push multiple times
+        # Read tags from file at runtime and push each
         script_content = '''#!/usr/bin/env bash
 set -euo pipefail
 
-CRANE="$PWD/{crane}"
 TAGS_FILE="{tags_file}"
 
-# Read first tag to export image
-FIRST_TAG=$(head -n1 "$TAGS_FILE")
-
-if [ -z "$FIRST_TAG" ]; then
-    echo "Error: Tags file is empty"
+if [ ! -f "$TAGS_FILE" ]; then
+    echo "Error: Tags file not found: $TAGS_FILE"
     exit 1
 fi
 
-echo "Exporting image: $FIRST_TAG"
-
-# Export from containerd once
-TEMP=$(mktemp -d)
-trap "rm -rf $TEMP" EXIT
-
-if ! ctr image export "$TEMP/image.tar" "$FIRST_TAG" 2>/dev/null; then
-    echo "Error: Image not found in containerd. Run: bazel build {soci_target}"
+# Check for nerdctl
+if ! command -v nerdctl >/dev/null 2>&1; then
+    echo "Error: nerdctl not found"
+    echo "Install nerdctl: https://github.com/containerd/nerdctl/releases"
     exit 1
 fi
 
-# Push to all tags from file
+echo "Using nerdctl for push"
+echo "Pushing SOCI-enabled images..."
+echo ""
+
+# Check if running as root
+if [ "$EUID" -eq 0 ]; then
+    NERDCTL="nerdctl"
+else
+    if ! nerdctl ps >/dev/null 2>&1; then
+        echo "Warning: nerdctl requires sudo to access containerd"
+        echo "You may need to run: sudo bazel run {target}"
+        NERDCTL="sudo nerdctl"
+    else
+        NERDCTL="nerdctl"
+    fi
+fi
+
+# Push each tag
 while IFS= read -r ref; do
     [ -z "$ref" ] && continue
 
     echo "Pushing: $ref"
 
-    if "$CRANE" push "$TEMP/image.tar" "$ref"; then
-        echo "✓ Pushed successfully: $ref"
-    else
-        echo "Error: Push failed for $ref. Make sure you're logged in: docker login"
+    if ! $NERDCTL images --quiet "$ref" 2>/dev/null | grep -q .; then
+        echo "Error: Image not found in containerd: $ref"
+        echo "Run: bazel build {soci_target}"
         exit 1
     fi
+
+    if $NERDCTL push "$ref"; then
+        echo "✓ Pushed successfully: $ref"
+    else
+        echo "Error: Push failed for $ref"
+        echo ""
+        echo "Authentication troubleshooting:"
+        echo ""
+        echo "AWS ECR:"
+        echo "  aws ecr get-login-password --region REGION | docker login --username AWS --password-stdin ACCOUNT.dkr.ecr.REGION.amazonaws.com"
+        echo ""
+        echo "GCP: gcloud auth configure-docker REGION-docker.pkg.dev"
+        echo "Azure: az acr login --name REGISTRY_NAME"
+        echo "Docker Hub: docker login"
+        exit 1
+    fi
+
+    echo ""
 done < "$TAGS_FILE"
+
+echo "✓ All images pushed successfully"
 '''.format(
-            crane = crane.short_path,
             tags_file = tags_file.short_path,
             soci_target = "//" + ctx.label.package + ":" + ctx.label.name.replace("_push", ""),
+            target = "//" + ctx.label.package + ":" + ctx.label.name,
         )
 
-        runfiles_files = [soci_marker, crane, tags_file]
-
+        runfiles_files = [soci_marker, tags_file]
     else:
         # Static list of tags
-        push_commands = ""
+        push_commands = []
+        
         for ref in image_refs:
-            push_commands += '''
-echo "Pushing: {ref}"
+            # Use shell.quote to properly escape the ref
+            from_shell = '''
+echo "Pushing: $ref"
 
-# Export from containerd
-TEMP=$(mktemp -d)
-trap "rm -rf $TEMP" EXIT
-
-if ! ctr image export "$TEMP/image.tar" "{ref}" 2>/dev/null; then
-    echo "Error: Image not found in containerd. Run: bazel build {soci_target}"
+if ! $NERDCTL images --quiet "$ref" 2>/dev/null | grep -q .; then
+    echo "Error: Image not found: $ref"
+    echo "Run: bazel build {soci_target}"
     exit 1
 fi
 
-# Push with crane
-if "$CRANE" push "$TEMP/image.tar" "{ref}"; then
-    echo "✓ Pushed successfully"
+if $NERDCTL push "$ref"; then
+    echo "✓ Pushed successfully: $ref"
 else
-    echo "Error: Push failed. Make sure you're logged in: docker login"
+    echo "Error: Push failed for $ref"
     exit 1
 fi
 
-'''.format(
-                ref = ref,
-                soci_target = "//" + ctx.label.package + ":" + ctx.label.name.replace("_push", ""),
-            )
+echo ""
+'''.format(soci_target = "//" + ctx.label.package + ":" + ctx.label.name.replace("_push", ""))
+            
+            # Set ref as a variable to avoid quoting issues
+            push_commands.append('ref="{}"'.format(ref))
+            push_commands.append(from_shell)
 
         script_content = '''#!/usr/bin/env bash
 set -euo pipefail
 
-CRANE="$PWD/{crane}"
+# Check for nerdctl
+if ! command -v nerdctl >/dev/null 2>&1; then
+    echo "Error: nerdctl not found"
+    echo "Install nerdctl: https://github.com/containerd/nerdctl/releases"
+    exit 1
+fi
+
+echo "Using nerdctl for push"
+echo "Pushing SOCI-enabled images..."
+echo ""
+
+# Check if running as root
+if [ "$EUID" -eq 0 ]; then
+    NERDCTL="nerdctl"
+else
+    if ! nerdctl ps >/dev/null 2>&1; then
+        echo "Warning: nerdctl requires sudo to access containerd"
+        NERDCTL="sudo nerdctl"
+    else
+        NERDCTL="nerdctl"
+    fi
+fi
 
 {push_commands}
+
+echo "✓ All images pushed successfully"
 '''.format(
-            crane = crane.short_path,
-            push_commands = push_commands,
+            push_commands = "\n".join(push_commands),
         )
 
-        runfiles_files = [soci_marker, crane]
+        runfiles_files = [soci_marker]
 
     ctx.actions.write(
         output = push_script,
@@ -150,36 +197,23 @@ soci_push = rule(
             doc = "List of image references to push. If not specified, uses repo_tags from soci_image.",
         ),
     },
-    toolchains = ["@rules_soci//soci:crane_toolchain_type"],
-    doc = """Push SOCI-enabled image to registry.
+    doc = """Push SOCI-enabled image to registry using nerdctl.
 
-Uses crane for authentication (reads ~/.docker/config.json automatically).
+Requires nerdctl to push both OCI image and SOCI indices to the registry.
+nerdctl automatically reads Docker credentials from ~/.docker/config.json.
 
-Example (auto-detect from soci_image):
+Example:
     soci_image(
         name = "app_soci",
         image = ":app_tarball",
         repo_tags = [
-            "docker.io/user/app:v1",
-            "docker.io/user/app:latest",
+            "325758001856.dkr.ecr.us-west-2.amazonaws.com/myapp:v1",
         ],
     )
 
     soci_push(
         name = "push",
         soci_image = ":app_soci",
-        # repo_tags automatically inherited from app_soci
     )
-
-Example (override tags):
-    soci_push(
-        name = "push_prod",
-        soci_image = ":app_soci",
-        repo_tags = ["docker.io/user/app:prod"],  # Only push prod tag
-    )
-
-Usage:
-    docker login docker.io
-    bazel run //:push
 """,
 )

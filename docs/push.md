@@ -12,36 +12,24 @@ load("@rules_soci//soci/private:push.bzl", "soci_push")
 soci_push(<a href="#soci_push-name">name</a>, <a href="#soci_push-repo_tags">repo_tags</a>, <a href="#soci_push-soci_image">soci_image</a>)
 </pre>
 
-Push SOCI-enabled image to registry.
+Push SOCI-enabled image to registry using nerdctl.
 
-Uses crane for authentication (reads ~/.docker/config.json automatically).
+Requires nerdctl to push both OCI image and SOCI indices to the registry.
+nerdctl automatically reads Docker credentials from ~/.docker/config.json.
 
-Example (auto-detect from soci_image):
+Example:
     soci_image(
         name = "app_soci",
         image = ":app_tarball",
         repo_tags = [
-            "docker.io/user/app:v1",
-            "docker.io/user/app:latest",
+            "325758001856.dkr.ecr.us-west-2.amazonaws.com/myapp:v1",
         ],
     )
 
     soci_push(
         name = "push",
         soci_image = ":app_soci",
-        # repo_tags automatically inherited from app_soci
     )
-
-Example (override tags):
-    soci_push(
-        name = "push_prod",
-        soci_image = ":app_soci",
-        repo_tags = ["docker.io/user/app:prod"],  # Only push prod tag
-    )
-
-Usage:
-    docker login docker.io
-    bazel run //:push
 
 **ATTRIBUTES**
 
