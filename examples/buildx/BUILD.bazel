@@ -2,6 +2,7 @@ load("@aspect_rules_buildx//buildx:defs.bzl", "buildx", "context")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
 load("@rules_soci//soci:defs.bzl", "soci_image", "soci_push")
+load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
 
 buildx(
     name = "buildx_image",
@@ -44,6 +45,24 @@ soci_image(
         "docker.io/minhducle/buildx_soci:latest",
         "docker.io/minhducle/buildx_soci:1.0.0",
     ],
+)
+
+# Use the value of --embed_label under --stamp, otherwise use a deterministic constant
+# value to ensure cache hits for actions that depend on this.
+expand_template(
+    name = "stamped",
+    out = "_stamped.tags.txt",
+    template = [
+        "docker.io/minhducle/buildx_soci:0.0.0",
+        "docker.io/minhducle/buildx_soci:latest",
+    ],
+    stamp_substitutions = {"0.0.0": "{{BUILD_EMBED_LABEL}}"},
+)
+
+soci_image(
+    name = "buildx_soci_image_stamped",
+    image = ":buildx_oci_load.tar",
+    repo_tags = ":stamped",
 )
 
 soci_push(
