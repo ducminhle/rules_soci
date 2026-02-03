@@ -12,6 +12,7 @@ SociImageInfo = provider(
     doc = "Information about a SOCI-converted image",
     fields = {
         "repo_tags": "List of repository tags for this image",
+        "repo_tags_file": "File containing tags (if using stamped tags)",
     },
 )
 
@@ -209,6 +210,7 @@ fi
         ),
         SociImageInfo(
             repo_tags = repo_tags_list,
+            repo_tags_file = tags_file if repo_tags_from_file else None,
         ),
     ]
 

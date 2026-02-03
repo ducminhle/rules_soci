@@ -14,7 +14,7 @@ This rule converts OCI images to SOCI format by:
 <pre>
 load("@rules_soci//soci/private:image.bzl", "SociImageInfo")
 
-SociImageInfo(<a href="#SociImageInfo-repo_tags">repo_tags</a>)
+SociImageInfo(<a href="#SociImageInfo-repo_tags">repo_tags</a>, <a href="#SociImageInfo-repo_tags_file">repo_tags_file</a>)
 </pre>
 
 Information about a SOCI-converted image
@@ -24,6 +24,7 @@ Information about a SOCI-converted image
 | Name  | Description |
 | :------------- | :------------- |
 | <a id="SociImageInfo-repo_tags"></a>repo_tags |  List of repository tags for this image    |
+| <a id="SociImageInfo-repo_tags_file"></a>repo_tags_file |  File containing tags (if using stamped tags)    |
 
 
 <a id="soci_image"></a>
