@@ -85,29 +85,108 @@ def _soci_image_impl(ctx):
     script = ctx.actions.declare_file(ctx.label.name + "_convert.sh")
 
     # Build additional tag commands
-    # Build additional tag commands. If tags come from a file, defer to script.
     tag_commands = ""
     if repo_tags_from_file:
+        # When using file, we read tags at runtime and apply them
         tag_commands = (
-            'TAGS_FILE="{tags_file}"\n' +
-            'DEST_REF=$(head -n1 "$TAGS_FILE" | tr -d "\\n")\n' +
-            'IMAGE_REF="${{DEST_REF}}-based"\n' +
-            'echo "Tags file: $TAGS_FILE -> primary: $DEST_REF"\n' +
             'tail -n +2 "$TAGS_FILE" | while read -r tag; do\n' +
             '  [ -z "$tag" ] && continue\n' +
             '  ctr image tag "$DEST_REF" "$tag" >/dev/null 2>&1 || true\n' +
             'done\n' +
             'echo "Tagged from file."\n'
-        ).format(tags_file = tags_file.path)
+        )
     else:
         if additional_tags:
             for tag in additional_tags:
                 tag_commands += 'ctr image tag "$DEST_REF" "{}" >/dev/null 2>&1\n'.format(tag)
             tag_commands += 'echo "Tagged: {}"\n'.format(", ".join(additional_tags))
 
-    ctx.actions.write(
-        output = script,
-        content = """#!/usr/bin/env bash
+    # Build script content - different templates for file vs list
+    if repo_tags_from_file:
+        script_content = """#!/usr/bin/env bash
+set -euo pipefail
+
+SOCI="{soci_bin}"
+IMAGE_TAR="{image_tar}"
+MARKER="{marker}"
+TAGS_FILE="{tags_file}"
+
+# Read tags from file
+DEST_REF=$(head -n1 "$TAGS_FILE" | tr -d "\\n")
+IMAGE_REF="${{DEST_REF}}-based"
+
+echo "Tags file: $TAGS_FILE -> primary: $DEST_REF"
+echo "Converting to SOCI: $DEST_REF"
+
+# Check containerd
+if ! command -v ctr >/dev/null 2>&1; then
+    echo "Error: containerd not found. Install: https://github.com/containerd/containerd/releases"
+    exit 1
+fi
+
+# Import image
+ctr image import "$IMAGE_TAR" >/dev/null 2>&1 || {{
+    echo "Error: Failed to import image from $IMAGE_TAR"
+    echo "Debugging info:"
+    ctr image ls || true
+    echo "Image tar exists: $([ -f "$IMAGE_TAR" ] && echo yes || echo no)"
+    exit 1
+}}
+
+LOADED_IMAGE=$(ctr image ls -q | grep -v "^sha256:" | head -n1 || echo "")
+if [ -z "$LOADED_IMAGE" ]; then
+    echo "Error: No image found after import"
+    exit 1
+fi
+
+# Tag for conversion
+if [ "$LOADED_IMAGE" != "$IMAGE_REF" ]; then
+    ctr image tag "$LOADED_IMAGE" "$IMAGE_REF" >/dev/null 2>&1 || true
+fi
+
+# Run soci convert
+echo "Running: soci convert {convert_args} $IMAGE_REF $DEST_REF"
+if "$SOCI" convert {convert_args} "$IMAGE_REF" "$DEST_REF"; then
+    echo "✓ SOCI conversion complete: $DEST_REF"
+else
+    exit_code=$?
+    if [ $exit_code -eq 1 ]; then
+        echo "⚠ Warning: No layers met size threshold (min-layer-size: {min_layer_size})"
+    else
+        echo "Error: SOCI conversion failed"
+        exit $exit_code
+    fi
+fi
+
+# Verify
+if ctr image ls -q | grep -q "$DEST_REF"; then
+    echo "$DEST_REF" > "$MARKER"
+else
+    echo "Warning: Image not found after conversion"
+    echo "converted" > "$MARKER"
+fi
+
+# Create additional tags
+{tag_commands}
+
+# Cleanup temp tags
+if [ "$IMAGE_REF" != "$DEST_REF" ]; then
+    ctr image rm "$IMAGE_REF" >/dev/null 2>&1 || true
+fi
+if [ "$LOADED_IMAGE" != "$IMAGE_REF" ] && [ "$LOADED_IMAGE" != "$DEST_REF" ]; then
+    ctr image rm "$LOADED_IMAGE" >/dev/null 2>&1 || true
+fi
+""".format(
+            soci_bin = soci_bin.path,
+            image_tar = image_tar.path,
+            marker = marker.path,
+            tags_file = tags_file.path,
+            convert_args = " ".join(convert_args),
+            min_layer_size = ctx.attr.min_layer_size,
+            tag_commands = tag_commands,
+        )
+    else:
+        script_content = """#!/usr/bin/env bash
 set -euo pipefail
 
 SOCI="{soci_bin}"
@@ -185,7 +264,11 @@ fi
             convert_args = " ".join(convert_args),
             min_layer_size = ctx.attr.min_layer_size,
             tag_commands = tag_commands,
-        ),
+        )
+
+    ctx.actions.write(
+        output = script,
+        content = script_content,
         is_executable = True,
     )
 
