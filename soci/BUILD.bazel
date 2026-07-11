@@ -5,6 +5,12 @@ toolchain_type(
     visibility = ["//visibility:public"],
 )
 
+# Crane toolchain type for soci_push
+toolchain_type(
+    name = "crane_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
 exports_files([
     "defs.bzl",
     "extensions.bzl",

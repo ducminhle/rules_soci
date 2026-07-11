@@ -7,32 +7,49 @@ local_path_override(
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
-bazel_dep(name = "bazel_lib", version = "3.1.1")
+bazel_dep(name = "bazel_lib", version = "3.5.0")
 bazel_dep(name = "rules_oci", version = "2.2.7")
 bazel_dep(name = "aspect_rules_buildx", version = "0.0.1")
-bazel_dep(name = "aspect_bazel_lib", version = "2.7.2")
+bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
 
 git_override(
     module_name = "aspect_rules_buildx",
     remote = "https://github.com/aspect-build/rules_buildx.git",
-    tag = "v0.0.1",
+    commit = "443a6e901b3dce0416fd7015e7031b47b8c7aa6f",
 )
 
 soci = use_extension("@rules_soci//soci:extensions.bzl", "soci")
-soci.toolchain(soci_version = "0.12.1")
-use_repo(soci, "soci_toolchains")
+soci.toolchain(soci_version = "0.14.1")
+soci.crane_toolchain(crane_version = "0.21.7")
+
+use_repo(
+    soci,
+    "soci_toolchains",
+    "crane_linux_amd64",
+    "crane_linux_arm64",
+    "crane_darwin_amd64",
+    "crane_darwin_arm64",
+)
+
+register_toolchains("@soci_toolchains//:all")
+register_toolchains(
+    "@crane_linux_amd64//:crane_toolchain",
+    "@crane_linux_arm64//:crane_toolchain",
+    "@crane_darwin_amd64//:crane_toolchain",
+    "@crane_darwin_arm64//:crane_toolchain",
+)
 
 register_toolchains("@soci_toolchains//:all")
 
 # Fetch the base image to be used for the build.
 oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
 oci.pull(
-    name = "python_3_11_9-bullseye",
-    digest = "sha256:64da8e5fd98057b05db01b49289b774e9fa3b81e87b4883079f6c31fb141b252",
-    image = "python:3.11.9-bullseye",
+    name = "python_3_14_6-trixie",
+    digest = "sha256:7a320a6d1216cd356eb4790261f2332e6e29e32f7e80646cb3e79f9e65b8e2c2",
+    image = "python:3.14.6-trixie",
     platforms = [
         "linux/arm64/v8",
         "linux/amd64",
     ],
 )
-use_repo(oci, "python_3_11_9-bullseye", "python_3_11_9-bullseye_linux_amd64", "python_3_11_9-bullseye_linux_arm64_v8")
+use_repo(oci, "python_3_14_6-trixie", "python_3_14_6-trixie_linux_amd64", "python_3_14_6-trixie_linux_arm64_v8")

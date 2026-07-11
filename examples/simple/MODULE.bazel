@@ -9,15 +9,31 @@ local_path_override(
     path = "../..",
 )
 
-bazel_dep(name = "rules_oci", version = "2.2.7")
-bazel_dep(name = "rules_pkg", version = "1.0.1")
-bazel_dep(name = "rules_go", version = "0.44.0")  # add rules_go to build the Go app
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_oci", version = "2.3.0")
+bazel_dep(name = "rules_pkg", version = "1.2.0")
+bazel_dep(name = "rules_go", version = "0.61.1")  # add rules_go to build the Go app
 
 soci = use_extension("@rules_soci//soci:extensions.bzl", "soci")
-soci.toolchain(soci_version = "0.12.1")
-use_repo(soci, "soci_toolchains")
+soci.toolchain(soci_version = "0.14.1")
+soci.crane_toolchain(crane_version = "0.21.7")
+
+use_repo(
+    soci,
+    "soci_toolchains",
+    "crane_linux_amd64",
+    "crane_linux_arm64",
+    "crane_darwin_amd64",
+    "crane_darwin_arm64",
+)
 
 register_toolchains("@soci_toolchains//:all")
+register_toolchains(
+    "@crane_linux_amd64//:crane_toolchain",
+    "@crane_linux_arm64//:crane_toolchain",
+    "@crane_darwin_amd64//:crane_toolchain",
+    "@crane_darwin_arm64//:crane_toolchain",
+)
 
 oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
 oci.pull(
@@ -28,4 +44,4 @@ oci.pull(
         "linux/arm64",
     ],
 )
-use_repo(oci, "ubuntu_base")
+use_repo(oci, "ubuntu_base", "ubuntu_base_linux_amd64", "ubuntu_base_linux_arm64")

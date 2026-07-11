@@ -1,4 +1,4 @@
-FROM python:3.11.9-bullseye
+FROM --platform=$TARGETPLATFORM python:3.14.6-trixie
 
 ARG DEBIAN_FRONTEND=noninteractive
 

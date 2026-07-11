@@ -4,8 +4,10 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load(
     ":versions.bzl",
     "DEFAULT_SOCI_VERSION",
+    "DEFAULT_CRANE_VERSION",
     "SOCI_VERSIONS",
 )
+load("//soci/private:repositories.bzl", "crane_repositories")
 
 def _toolchains_repo_impl(rctx):
     """Create toolchains repository"""
@@ -73,11 +75,28 @@ def _soci_impl(ctx):
 
     _toolchains_repo(name = "soci_toolchains", soci_version = soci_version)
 
+    # Crane toolchains (used by soci_push) -- created here so no WORKSPACE
+    # file and no pre-installed `crane` are required.
+    crane_version = DEFAULT_CRANE_VERSION
+    for mod in ctx.modules:
+        for tag in mod.tags.crane_toolchain:
+            if tag.crane_version:
+                crane_version = tag.crane_version
+
+    crane_repositories(version = crane_version)
+
 _toolchain_tag = tag_class(attrs = {
     "soci_version": attr.string(default = DEFAULT_SOCI_VERSION),
 })
 
+_crane_toolchain_tag = tag_class(attrs = {
+    "crane_version": attr.string(default = DEFAULT_CRANE_VERSION),
+})
+
 soci = module_extension(
     implementation = _soci_impl,
-    tag_classes = {"toolchain": _toolchain_tag},
+    tag_classes = {
+        "toolchain": _toolchain_tag,
+        "crane_toolchain": _crane_toolchain_tag,
+    },
 )
